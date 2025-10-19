@@ -258,5 +258,3 @@ export default function BasePayMiniApp() {
     </div>
   );
 }
-
-// End of file
