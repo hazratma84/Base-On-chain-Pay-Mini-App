@@ -1,86 +1,54 @@
-import React, { useState, useEffect, useRef } from "react";
-import {
-  BrowserProvider,
-  parseEther,
-  formatEther,
-  getAddress,
-  isAddress,
-  hexValue,
-} from "ethers";
+import React, { useState, useEffect } from "react";
+import { ethers } from "ethers";
 
-/*
-  Updated for ethers v6:
-  - BrowserProvider instead of ethers.providers.Web3Provider
-  - named exports: parseEther, formatEther, getAddress, isAddress, hexValue
-*/
+// Default export a React component (Next.js friendly page or standalone React component)
+// Minimal, production-ready single-file mini app for "On-Chain Pay" on Base L2
+// - Connects to user's injected wallet (MetaMask, Coinbase Wallet mobile via deep link)
+// - Shows ETH (BASE) balance
+// - Lets user send a simple ETH transfer on Base
+// - Uses Tailwind CSS for styling (no imports needed if Tailwind is configured)
 
 export default function BasePayMiniApp() {
   const [provider, setProvider] = useState(null);
   const [signer, setSigner] = useState(null);
   const [address, setAddress] = useState("");
-  const [balance, setBalance] = useState("0.0");
+  const [balance, setBalance] = useState("0");
   const [network, setNetwork] = useState(null);
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState("");
   const [sending, setSending] = useState(false);
 
-  const BASE_CHAIN_ID = 8453; // Base Mainnet
-  const chainChangedHandlerRef = useRef(null);
-  const accountsChangedHandlerRef = useRef(null);
-
-  function shortAddress(addr = "") {
-    try {
-      const s = getAddress(addr);
-      return `${s.slice(0, 6)}...${s.slice(-4)}`;
-    } catch {
-      return addr;
-    }
-  }
+  // Base Mainnet chainId: 8453 (common value for Base mainnet). The app will attempt to prompt the wallet to switch if needed.
+  const BASE_CHAIN_ID = 8453;
 
   useEffect(() => {
+    // If an injected provider exists, set it up
     if (typeof window !== "undefined" && window.ethereum) {
-      const web3 = new BrowserProvider(window.ethereum);
-      setProvider(web3);
+      const p = new ethers.providers.Web3Provider(window.ethereum, "any");
+      setProvider(p);
 
-      const accountsChanged = async (accounts) => {
-        if (!accounts || accounts.length === 0) {
+      // Listen for chain/account changes
+      window.ethereum.on("accountsChanged", (accounts) => {
+        if (accounts.length === 0) {
           resetConnection();
-          return;
+        } else {
+          setAddress(accounts[0]);
+          setupSigner(p);
         }
-        const a = accounts[0];
-        setAddress(a);
-        await setupSigner(web3);
-      };
-      const chainChanged = async () => {
-        try {
-          const net = await web3.getNetwork();
-          setNetwork(net);
-          await setupSigner(web3);
-          setStatus(`Switched to network ${net.name} (${net.chainId})`);
-        } catch (err) {
-          console.warn("chainChanged handler error", err);
-        }
-      };
+      });
 
-      accountsChangedHandlerRef.current = accountsChanged;
-      chainChangedHandlerRef.current = chainChanged;
-
-      if (window.ethereum.on) {
-        window.ethereum.on("accountsChanged", accountsChanged);
-        window.ethereum.on("chainChanged", chainChanged);
-      }
-    } else {
-      setStatus("No injected wallet found (MetaMask / Coinbase Wallet).");
+      window.ethereum.on("chainChanged", () => {
+        // Reload to simplify network handling (or you could re-check and re-init provider)
+        window.location.reload();
+      });
     }
 
     return () => {
       try {
         if (window.ethereum && window.ethereum.removeListener) {
-          if (accountsChangedHandlerRef.current)
-            window.ethereum.removeListener("accountsChanged", accountsChangedHandlerRef.current);
-          if (chainChangedHandlerRef.current)
-            window.ethereum.removeListener("chainChanged", chainChangedHandlerRef.current);
+          window.ethereum.removeListener("accountsChanged", () => {});
+          window.ethereum.removeListener("chainChanged", () => {});
         }
       } catch (e) {
         // ignore
@@ -94,63 +62,56 @@ export default function BasePayMiniApp() {
       return;
     }
     try {
-      setStatus("Requesting wallet connection…");
-      // BrowserProvider wraps window.ethereum; eth_requestAccounts still required
+      setStatus("Connecting…");
       await provider.send("eth_requestAccounts", []);
-      const net = await provider.getNetwork();
-      setNetwork(net);
+      const pNetwork = await provider.getNetwork();
+      setNetwork(pNetwork);
 
-      if (net.chainId !== BASE_CHAIN_ID) {
-        setStatus(`You're on ${net.name} — attempting to switch to Base...`);
+      // If not Base, attempt to switch or add
+      if (pNetwork.chainId !== BASE_CHAIN_ID) {
         try {
           await provider.send("wallet_switchEthereumChain", [
-            { chainId: hexValue(BASE_CHAIN_ID) },
+            { chainId: ethers.utils.hexValue(BASE_CHAIN_ID) },
           ]);
-        } catch (switchErr) {
+        } catch (switchError) {
+          // If the chain is not added, request to add Base (basic params). Wallets like MetaMask may reject — user will need to approve.
           try {
             await provider.send("wallet_addEthereumChain", [
               {
-                chainId: hexValue(BASE_CHAIN_ID),
+                chainId: ethers.utils.hexValue(BASE_CHAIN_ID),
                 chainName: "Base",
                 nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
                 rpcUrls: ["https://mainnet.base.org"],
                 blockExplorerUrls: ["https://basescan.org"],
               },
             ]);
-            await provider.send("wallet_switchEthereumChain", [
-              { chainId: hexValue(BASE_CHAIN_ID) },
-            ]);
-          } catch (addErr) {
-            console.warn("Could not add/switch to Base automatically", addErr);
-            setStatus("Please switch your wallet to the Base network manually.");
+          } catch (addError) {
+            console.warn("Could not add Base network automatically", addError);
+            // continue — user may still be on other chain
           }
         }
-        const newNet = await provider.getNetwork();
-        setNetwork(newNet);
       }
 
-      await setupSigner(provider);
+      setupSigner(provider);
       setStatus("Connected");
     } catch (err) {
       console.error(err);
-      setStatus("Connection failed: " + (err?.message || err));
+      setStatus("Connection failed: " + (err.message || err));
     }
   }
 
   async function setupSigner(p) {
     try {
-      // BrowserProvider.getSigner() may be async in some runtime; support both styles
-      const s = (typeof p.getSigner === "function") ? await p.getSigner() : p.getSigner();
+      const s = p.getSigner();
       setSigner(s);
       const addr = await s.getAddress();
       setAddress(addr);
       const bal = await p.getBalance(addr);
-      setBalance(formatEther(bal));
+      setBalance(ethers.utils.formatEther(bal));
       const net = await p.getNetwork();
       setNetwork(net);
     } catch (err) {
       console.warn("setupSigner err", err);
-      if (!address) setStatus("Please connect wallet (approve account access).");
     }
   }
 
@@ -158,69 +119,53 @@ export default function BasePayMiniApp() {
     setProvider(null);
     setSigner(null);
     setAddress("");
-    setBalance("0.0");
+    setBalance("0");
     setNetwork(null);
     setStatus("");
-    if (typeof window !== "undefined" && window.ethereum) {
-      const web3 = new BrowserProvider(window.ethereum);
-      setProvider(web3);
-    }
   }
 
   async function sendPayment(e) {
     e.preventDefault();
-    if (!provider || !signer) {
+    if (!signer) {
       setStatus("Wallet not connected");
       return;
     }
 
-    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      setStatus("Invalid amount (must be a number > 0)");
+    if (!ethers.utils.isAddress(recipient)) {
+      setStatus("Invalid recipient address");
       return;
     }
 
-    let resolvedRecipient = recipient.trim();
+    let value;
     try {
-      if (!isAddress(resolvedRecipient)) {
-        const maybeResolved = await provider.resolveName(resolvedRecipient);
-        if (!maybeResolved) {
-          setStatus("Recipient is not a valid address or resolvable ENS name");
-          return;
-        }
-        resolvedRecipient = maybeResolved;
-      }
+      value = ethers.utils.parseEther(amount || "0");
+    } catch (err) {
+      setStatus("Invalid amount");
+      return;
+    }
 
-      const value = parseEther(amount);
-      const balBN = await provider.getBalance(address);
-      if (balBN.lt(value)) {
-        setStatus("Insufficient balance for the requested amount (does not include gas).");
-        return;
-      }
-
+    try {
       setSending(true);
       setStatus("Preparing transaction…");
 
-      const feeData = await provider.getFeeData();
+      // Build transaction
       const tx = {
-        to: resolvedRecipient,
-        value,
+        to: recipient,
+        value: value,
+        // gasLimit left for wallet to estimate; optionally you can set gasPrice / maxFeePerGas
       };
 
-      if (feeData?.maxFeePerGas && feeData?.maxPriorityFeePerGas) {
-        tx.maxFeePerGas = feeData.maxFeePerGas;
-        tx.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
-      } else if (feeData?.gasPrice) {
-        tx.gasPrice = feeData.gasPrice;
-      }
-
+      // Send transaction
       const response = await signer.sendTransaction(tx);
-      setStatus(`Transaction sent — hash: ${response.hash}. Waiting for confirmation...`);
+      setStatus(`Transaction sent — hash: ${response.hash}`);
 
+      // Wait for confirmation (1 block)
       const receipt = await response.wait(1);
       if (receipt && receipt.status === 1) {
         setStatus(`Payment confirmed in block ${receipt.blockNumber}. Tx: ${response.hash}`);
-        const newBal = await provider.getBalance(address);
-        setBalance(formatEther(newBal));
+        // update balance
+        const bal = await provider.getBalance(address);
+        setBalance(ethers.utils.formatEther(bal));
         setRecipient("");
         setAmount("");
       } else {
@@ -228,11 +173,7 @@ export default function BasePayMiniApp() {
       }
     } catch (err) {
       console.error(err);
-      if (err?.code === 4001) {
-        setStatus("User rejected the transaction");
-      } else {
-        setStatus("Send failed: " + (err?.message || String(err)));
-      }
+      setStatus("Send failed: " + (err.message || err));
     } finally {
       setSending(false);
     }
@@ -244,24 +185,14 @@ export default function BasePayMiniApp() {
         <header className="flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-bold">Base On-Chain Pay</h1>
-            <p className="text-sm text-slate-500">Quick on‑chain payments on Base L2</p>
+            <p className="text-sm text-slate-500">Quick on-chain payments on Base L2</p>
           </div>
           <div className="text-right">
             {address ? (
               <div className="text-sm">
-                <div className="font-mono text-xs text-slate-700">{shortAddress(address)}</div>
-                <div className="text-xs text-slate-500">{Number(balance).toFixed(6)} ETH</div>
-                <div className="text-xs text-slate-400">
-                  Network: {network ? `${network.name} (${network.chainId})` : "—"}
-                </div>
-                <div className="mt-2">
-                  <button
-                    onClick={resetConnection}
-                    className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs"
-                  >
-                    Disconnect
-                  </button>
-                </div>
+                <div className="font-mono text-xs text-slate-700">{address.slice(0, 6)}...{address.slice(-4)}</div>
+                <div className="text-xs text-slate-500">{balance} ETH</div>
+                <div className="text-xs text-slate-400">Network: {network ? network.name + ` (${network.chainId})` : '—'}</div>
               </div>
             ) : (
               <button
@@ -280,7 +211,7 @@ export default function BasePayMiniApp() {
               <label className="block text-sm font-medium text-slate-700">Recipient</label>
               <input
                 className="mt-1 block w-full rounded-md border-gray-200 shadow-sm p-2"
-                placeholder="0x... or ENS (e.g. vitalik.eth)"
+                placeholder="0x... or ENS (if supported)"
                 value={recipient}
                 onChange={(e) => setRecipient(e.target.value)}
               />
@@ -297,31 +228,28 @@ export default function BasePayMiniApp() {
             </div>
 
             <div className="flex items-center justify-between">
-              <div className="text-xs text-slate-500">Transaction will prompt your wallet to confirm.</div>
+              <div className="text-xs text-slate-500">Note: Transaction will prompt your wallet to confirm.</div>
               <button
                 type="submit"
                 disabled={sending}
                 className="px-4 py-2 bg-green-600 text-white rounded-md text-sm disabled:opacity-60"
               >
-                {sending ? "Sending…" : "Send Payment"}
+                {sending ? 'Sending…' : 'Send Payment'}
               </button>
             </div>
           </form>
 
           <div className="mt-4 bg-slate-50 p-3 rounded-lg text-sm text-slate-600">
-            <div>Status: {status || "Idle"}</div>
+            <div>Status: {status || 'Idle'}</div>
           </div>
 
           <section className="mt-6 text-xs text-slate-500 space-y-2">
             <div>
               Tips:
               <ul className="list-disc ml-5">
-                <li>Use MetaMask or Coinbase Wallet on the Base network.</li>
-                <li>If your wallet is on another chain, the app will try to switch to Base (you must approve).</li>
-                <li>
-                  For production: add server-side protections, better gas estimation, UX for pending txs,
-                  TX history, and nonce management.
-                </li>
+                <li>Use MetaMask or Coinbase Wallet on Base network.</li>
+                <li>If your wallet is on a different chain, the app will try to switch to Base (you must approve).</li>
+                <li>For production, add better error handling, gas estimation, and CSRF protections on server-backed flows.</li>
               </ul>
             </div>
           </section>
@@ -330,204 +258,5 @@ export default function BasePayMiniApp() {
     </div>
   );
 }
-      await setupSigner(provider);
-      setStatus("Connected");
-    } catch (err) {
-      console.error(err);
-      setStatus("Connection failed: " + (err?.message || err));
-    }
-  }
 
-  async function setupSigner(p) {
-    try {
-      // BrowserProvider.getSigner() may be async in some runtime; support both styles
-      const s = (typeof p.getSigner === "function") ? await p.getSigner() : p.getSigner();
-      setSigner(s);
-      const addr = await s.getAddress();
-      setAddress(addr);
-      const bal = await p.getBalance(addr);
-      setBalance(formatEther(bal));
-      const net = await p.getNetwork();
-      setNetwork(net);
-    } catch (err) {
-      console.warn("setupSigner err", err);
-      if (!address) setStatus("Please connect wallet (approve account access).");
-    }
-  }
-
-  function resetConnection() {
-    setProvider(null);
-    setSigner(null);
-    setAddress("");
-    setBalance("0.0");
-    setNetwork(null);
-    setStatus("");
-    if (typeof window !== "undefined" && window.ethereum) {
-      const web3 = new BrowserProvider(window.ethereum);
-      setProvider(web3);
-    }
-  }
-
-  async function sendPayment(e) {
-    e.preventDefault();
-    if (!provider || !signer) {
-      setStatus("Wallet not connected");
-      return;
-    }
-
-    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      setStatus("Invalid amount (must be a number > 0)");
-      return;
-    }
-
-    let resolvedRecipient = recipient.trim();
-    try {
-      if (!isAddress(resolvedRecipient)) {
-        const maybeResolved = await provider.resolveName(resolvedRecipient);
-        if (!maybeResolved) {
-          setStatus("Recipient is not a valid address or resolvable ENS name");
-          return;
-        }
-        resolvedRecipient = maybeResolved;
-      }
-
-      const value = parseEther(amount);
-      const balBN = await provider.getBalance(address);
-      if (balBN.lt(value)) {
-        setStatus("Insufficient balance for the requested amount (does not include gas).");
-        return;
-      }
-
-      setSending(true);
-      setStatus("Preparing transaction…");
-
-      const feeData = await provider.getFeeData();
-      const tx = {
-        to: resolvedRecipient,
-        value,
-      };
-
-      if (feeData?.maxFeePerGas && feeData?.maxPriorityFeePerGas) {
-        tx.maxFeePerGas = feeData.maxFeePerGas;
-        tx.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
-      } else if (feeData?.gasPrice) {
-        tx.gasPrice = feeData.gasPrice;
-      }
-
-      const response = await signer.sendTransaction(tx);
-      setStatus(`Transaction sent — hash: ${response.hash}. Waiting for confirmation...`);
-
-      const receipt = await response.wait(1);
-      if (receipt && receipt.status === 1) {
-        setStatus(`Payment confirmed in block ${receipt.blockNumber}. Tx: ${response.hash}`);
-        const newBal = await provider.getBalance(address);
-        setBalance(formatEther(newBal));
-        setRecipient("");
-        setAmount("");
-      } else {
-        setStatus("Transaction failed or reverted");
-      }
-    } catch (err) {
-      console.error(err);
-      if (err?.code === 4001) {
-        setStatus("User rejected the transaction");
-      } else {
-        setStatus("Send failed: " + (err?.message || String(err)));
-      }
-    } finally {
-      setSending(false);
-    }
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="max-w-xl w-full bg-white rounded-2xl shadow-lg p-6">
-        <header className="flex items-start justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Base On-Chain Pay</h1>
-            <p className="text-sm text-slate-500">Quick on‑chain payments on Base L2</p>
-          </div>
-          <div className="text-right">
-            {address ? (
-              <div className="text-sm">
-                <div className="font-mono text-xs text-slate-700">{shortAddress(address)}</div>
-                <div className="text-xs text-slate-500">{Number(balance).toFixed(6)} ETH</div>
-                <div className="text-xs text-slate-400">
-                  Network: {network ? `${network.name} (${network.chainId})` : "—"}
-                </div>
-                <div className="mt-2">
-                  <button
-                    onClick={resetConnection}
-                    className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={connectWallet}
-                className="px-3 py-2 bg-indigo-600 text-white rounded-md text-sm"
-              >
-                Connect Wallet
-              </button>
-            )}
-          </div>
-        </header>
-
-        <main className="mt-6">
-          <form onSubmit={sendPayment} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700">Recipient</label>
-              <input
-                className="mt-1 block w-full rounded-md border-gray-200 shadow-sm p-2"
-                placeholder="0x... or ENS (e.g. vitalik.eth)"
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700">Amount (ETH)</label>
-              <input
-                className="mt-1 block w-full rounded-md border-gray-200 shadow-sm p-2"
-                placeholder="0.01"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-slate-500">Transaction will prompt your wallet to confirm.</div>
-              <button
-                type="submit"
-                disabled={sending}
-                className="px-4 py-2 bg-green-600 text-white rounded-md text-sm disabled:opacity-60"
-              >
-                {sending ? "Sending…" : "Send Payment"}
-              </button>
-            </div>
-          </form>
-
-          <div className="mt-4 bg-slate-50 p-3 rounded-lg text-sm text-slate-600">
-            <div>Status: {status || "Idle"}</div>
-          </div>
-
-          <section className="mt-6 text-xs text-slate-500 space-y-2">
-            <div>
-              Tips:
-              <ul className="list-disc ml-5">
-                <li>Use MetaMask or Coinbase Wallet on the Base network.</li>
-                <li>If your wallet is on another chain, the app will try to switch to Base (you must approve).</li>
-                <li>
-                  For production: add server-side protections, better gas estimation, UX for pending txs,
-                  TX history, and nonce management.
-                </li>
-              </ul>
-            </div>
-          </section>
-        </main>
-      </div>
-    </div>
-  );
-        }
+// End of file
