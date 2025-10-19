@@ -1,0 +1,14 @@
+From fc28d040d156a677fc88debc51cded105c7b5beb Mon Sep 17 00:00:00 2001
+From: GitHub Copilot <copilot@example.com>
+Date: Sun, 19 Oct 2025 01:34:15 +0000
+Subject: [PATCH] fix: update component for ethers v6 and add vercel.json
+
+---
+ vercel.json                                  | 2 ++
+ src/components/BasePayMiniApp.jsx            | 330 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 332 insertions(+)
+ create mode 100644 vercel.json
+ delete mode 100644 src/components/BasePayMiniApp.jsx
+ create mode 100644 src/components/BasePayMiniApp.jsx
+---
+*** End Patch
