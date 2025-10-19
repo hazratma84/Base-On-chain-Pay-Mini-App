@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
-import { ethers } from "ethers";
+import {
+  BrowserProvider,
+  parseEther,
+  formatEther,
+  getAddress,
+  isAddress,
+  hexValue,
+} from "ethers";
 
 /*
-  Improved single-file "Base On-Chain Pay" mini app for Base L2.
-  - ENS resolution
-  - Better event listener lifecycle
-  - EIP-1559 fee suggestions
-  - Input validation and balance check
+  Updated for ethers v6:
+  - BrowserProvider instead of ethers.providers.Web3Provider
+  - named exports: parseEther, formatEther, getAddress, isAddress, hexValue
 */
 
 export default function BasePayMiniApp() {
@@ -26,7 +31,7 @@ export default function BasePayMiniApp() {
 
   function shortAddress(addr = "") {
     try {
-      const s = ethers.utils.getAddress(addr);
+      const s = getAddress(addr);
       return `${s.slice(0, 6)}...${s.slice(-4)}`;
     } catch {
       return addr;
@@ -35,7 +40,7 @@ export default function BasePayMiniApp() {
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.ethereum) {
-      const web3 = new ethers.providers.Web3Provider(window.ethereum, "any");
+      const web3 = new BrowserProvider(window.ethereum);
       setProvider(web3);
 
       const accountsChanged = async (accounts) => {
@@ -66,7 +71,7 @@ export default function BasePayMiniApp() {
         window.ethereum.on("chainChanged", chainChanged);
       }
     } else {
-      setStatus("No injected wallet found (MetaMask / Coinbase Wallet).");
+      setStatus("No injected wallet found (MetaMask / Coinbase Wallet).);
     }
 
     return () => {
@@ -90,12 +95,8 @@ export default function BasePayMiniApp() {
     }
     try {
       setStatus("Requesting wallet connection…");
-      const accounts = await provider.send("eth_requestAccounts", []);
-      if (!accounts || accounts.length === 0) {
-        setStatus("No accounts available");
-        return;
-      }
-
+      // BrowserProvider wraps window.ethereum; eth_requestAccounts still required
+      await provider.send("eth_requestAccounts", []);
       const net = await provider.getNetwork();
       setNetwork(net);
 
@@ -103,21 +104,21 @@ export default function BasePayMiniApp() {
         setStatus(`You're on ${net.name} — attempting to switch to Base...`);
         try {
           await provider.send("wallet_switchEthereumChain", [
-            { chainId: ethers.utils.hexValue(BASE_CHAIN_ID) }
+            { chainId: hexValue(BASE_CHAIN_ID) },
           ]);
         } catch (switchErr) {
           try {
             await provider.send("wallet_addEthereumChain", [
               {
-                chainId: ethers.utils.hexValue(BASE_CHAIN_ID),
+                chainId: hexValue(BASE_CHAIN_ID),
                 chainName: "Base",
                 nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
                 rpcUrls: ["https://mainnet.base.org"],
-                blockExplorerUrls: ["https://basescan.org"]
-              }
+                blockExplorerUrls: ["https://basescan.org"],
+              },
             ]);
             await provider.send("wallet_switchEthereumChain", [
-              { chainId: ethers.utils.hexValue(BASE_CHAIN_ID) }
+              { chainId: hexValue(BASE_CHAIN_ID) },
             ]);
           } catch (addErr) {
             console.warn("Could not add/switch to Base automatically", addErr);
@@ -138,12 +139,13 @@ export default function BasePayMiniApp() {
 
   async function setupSigner(p) {
     try {
-      const s = p.getSigner();
-      const addr = await s.getAddress();
+      // BrowserProvider.getSigner() may be async in some runtime; support both styles
+      const s = (typeof p.getSigner === "function") ? await p.getSigner() : p.getSigner();
       setSigner(s);
+      const addr = await s.getAddress();
       setAddress(addr);
       const bal = await p.getBalance(addr);
-      setBalance(ethers.utils.formatEther(bal));
+      setBalance(formatEther(bal));
       const net = await p.getNetwork();
       setNetwork(net);
     } catch (err) {
@@ -160,7 +162,7 @@ export default function BasePayMiniApp() {
     setNetwork(null);
     setStatus("");
     if (typeof window !== "undefined" && window.ethereum) {
-      const web3 = new ethers.providers.Web3Provider(window.ethereum, "any");
+      const web3 = new BrowserProvider(window.ethereum);
       setProvider(web3);
     }
   }
@@ -179,7 +181,7 @@ export default function BasePayMiniApp() {
 
     let resolvedRecipient = recipient.trim();
     try {
-      if (!ethers.utils.isAddress(resolvedRecipient)) {
+      if (!isAddress(resolvedRecipient)) {
         const maybeResolved = await provider.resolveName(resolvedRecipient);
         if (!maybeResolved) {
           setStatus("Recipient is not a valid address or resolvable ENS name");
@@ -188,10 +190,10 @@ export default function BasePayMiniApp() {
         resolvedRecipient = maybeResolved;
       }
 
-      const value = ethers.utils.parseEther(amount);
+      const value = parseEther(amount);
       const balBN = await provider.getBalance(address);
       if (balBN.lt(value)) {
-        setStatus("Insufficient balance for the requested amount (does not include gas).");
+        setStatus("Insufficient balance for the requested amount (does not include gas).);
         return;
       }
 
@@ -201,7 +203,7 @@ export default function BasePayMiniApp() {
       const feeData = await provider.getFeeData();
       const tx = {
         to: resolvedRecipient,
-        value
+        value,
       };
 
       if (feeData?.maxFeePerGas && feeData?.maxPriorityFeePerGas) {
@@ -218,7 +220,7 @@ export default function BasePayMiniApp() {
       if (receipt && receipt.status === 1) {
         setStatus(`Payment confirmed in block ${receipt.blockNumber}. Tx: ${response.hash}`);
         const newBal = await provider.getBalance(address);
-        setBalance(ethers.utils.formatEther(newBal));
+        setBalance(formatEther(newBal));
         setRecipient("");
         setAmount("");
       } else {
@@ -327,4 +329,4 @@ export default function BasePayMiniApp() {
       </div>
     </div>
   );
-  }
+}
